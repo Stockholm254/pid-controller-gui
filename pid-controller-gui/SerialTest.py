@@ -3,7 +3,7 @@ import time
 
 try:
     # Use the parameters found in your remotecontroller.py line 311
-    ser = serial.Serial('COM44', 112500, timeout=1)
+    ser = serial.Serial('COM50', 112500, timeout=1)
     print("--- Success: COM17 is open ---")
     
     # Basic hardware info
