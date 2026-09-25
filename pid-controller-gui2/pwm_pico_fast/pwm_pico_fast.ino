@@ -37,6 +37,8 @@ enum {
     VAR_err_P_limits = 0b1001,
     VAR_err_I_limits = 0b1010,
 
+    VAR_d_window = 0b1100,
+
     // special
     CMD_stream_start = 0b0001,
     CMD_stream_stop = 0b0000,
@@ -108,6 +110,11 @@ static float err_I = 0.0f;
 static float err_P_limits[2] = {-3500.0f, 3500.0f};
 static float err_I_limits[2] = {-6500.0f, 6500.0f};
 
+// [s] window of the least-squares temperature slope used by the D term (see smoothed_slope())
+static float d_window = 10.0f;
+#define D_WINDOW_MIN 2.0f
+#define D_WINDOW_MAX 120.0f
+
 #define REQUEST_RESPONSE_BUF_SIZE (sizeof(char)+2*(sizeof(float)))  // same size for both requests and responses
 unsigned char buf[REQUEST_RESPONSE_BUF_SIZE];  // message buffer (both for receiving and sending)
 
@@ -118,7 +125,9 @@ static float stream_values[2];
 #define STREAM_PREFIX 0b00000001
 unsigned char stream_buf[STREAM_BUF_SIZE];
 
-PID_v2 myPID(kP, kI, kD, PID::Direct, PID::P_On::Measurement);
+// the library does P and I only - its D term (difference of two consecutive noisy readings) is replaced by kD times
+// the smoothed slope, see loop()
+PID_v2 myPID(kP, kI, 0.0, PID::Direct, PID::P_On::Measurement);
 
 // float analogscale=30.22*3.3/4095.0;
 // float vcurrent = 2.5;        //current piezo voltage
@@ -144,6 +153,64 @@ void stream_stop(void) {
     if (stream_run) {
         stream_run = false;
     }
+}
+
+/*
+ *  Temperature history for a smooth derivative: the D term uses the slope of a least-squares straight line through the
+ *  samples of the last d_window seconds instead of the difference of two consecutive (noisy) readings
+ */
+#define DBUF_N 1024
+#define DBUF_MIN_SPACING_MS 200  // keeps D_WINDOW_MAX within the buffer even if the loop gets faster
+static uint32_t dbuf_ms[DBUF_N];
+static float dbuf_temp[DBUF_N];
+static int dbuf_head = 0;  // next slot to write
+static int dbuf_count = 0;
+
+void dbuf_push(uint32_t now, float temp) {
+    if (dbuf_count > 0 && now - dbuf_ms[(dbuf_head + DBUF_N - 1) % DBUF_N] < DBUF_MIN_SPACING_MS)
+        return;
+
+    dbuf_ms[dbuf_head] = now;
+    dbuf_temp[dbuf_head] = temp;
+    dbuf_head = (dbuf_head + 1) % DBUF_N;
+    if (dbuf_count < DBUF_N)
+        dbuf_count++;
+}
+
+// slope [°C/s] of the least-squares line through the samples of the last d_window seconds, 0 if there is not enough data
+float smoothed_slope(uint32_t now) {
+    uint32_t window_ms = (uint32_t)(d_window * 1000.0f);
+    float t_sum = 0.0f, temp_sum = 0.0f;
+    uint32_t newest_age = 0, oldest_age = 0;
+    int n = 0;
+
+    // walk from the newest sample to the oldest one; times are relative to 'now' (seconds, <= 0) to keep the precision
+    for (int k = 0; k < dbuf_count; k++) {
+        int idx = (dbuf_head - 1 - k + DBUF_N) % DBUF_N;
+        uint32_t age = now - dbuf_ms[idx];
+        if (age > window_ms)
+            break;
+        if (n == 0)
+            newest_age = age;
+        oldest_age = age;
+        t_sum += -(float)age / 1000.0f;
+        temp_sum += dbuf_temp[idx];
+        n++;
+    }
+    if (n < 3 || oldest_age - newest_age < 1000)
+        return 0.0f;
+
+    float t_mean = t_sum / n;
+    float temp_mean = temp_sum / n;
+    float s_tt = 0.0f, s_ttemp = 0.0f;
+    for (int k = 0; k < n; k++) {
+        int idx = (dbuf_head - 1 - k + DBUF_N) % DBUF_N;
+        float dt = -(float)(now - dbuf_ms[idx]) / 1000.0f - t_mean;
+        s_tt += dt * dt;
+        s_ttemp += dt * (dbuf_temp[idx] - temp_mean);
+    }
+
+    return s_ttemp / s_tt;
 }
 
 int process_request(unsigned char *request_response_buf) {
@@ -225,6 +292,10 @@ int process_request(unsigned char *request_response_buf) {
                 memcpy(&request_response_buf[1], err_I_limits, 2*sizeof(float));
                 result = RESULT_ok;
                 break;
+            case VAR_d_window:
+                memcpy(&request_response_buf[1], &d_window, sizeof(float));
+                result = RESULT_ok;
+                break;
 
             case CMD_save_to_eeprom:
                 //printf("CMD_save_to_eeprom\n");
@@ -251,19 +322,19 @@ int process_request(unsigned char *request_response_buf) {
             case VAR_kP:
                 //printf("VAR_kP\n");
                 memcpy(&kP, &request_response_buf[1], sizeof(float));
-                myPID.SetTunings(kP, kI, kD);
+                myPID.SetTunings(kP, kI, 0.0);
                 result = RESULT_ok;
                 break;
             case VAR_kI:
                 //printf("VAR_kI\n");
                 memcpy(&kI, &request_response_buf[1], sizeof(float));
-                myPID.SetTunings(kP, kI, kD);
+                myPID.SetTunings(kP, kI, 0.0);
                 result = RESULT_ok;
                 break;
             case VAR_kD:
                 //printf("VAR_kD\n");
                 memcpy(&kD, &request_response_buf[1], sizeof(float));
-                myPID.SetTunings(kP, kI, kD);
+                myPID.SetTunings(kP, kI, 0.0);
                 result = RESULT_ok;
                 break;
             case VAR_err_I:
@@ -284,6 +355,15 @@ int process_request(unsigned char *request_response_buf) {
             case VAR_err_I_limits:
                 //printf("VAR_err_I_limits\n");
                 memcpy(err_I_limits, &request_response_buf[1], 2*sizeof(float));
+                result = RESULT_ok;
+                break;
+            case VAR_d_window:
+                // clamp instead of replying with an error (the GUI raises an exception on error replies)
+                memcpy(&d_window, &request_response_buf[1], sizeof(float));
+                if (!(d_window >= D_WINDOW_MIN))  // also catches NaN
+                    d_window = D_WINDOW_MIN;
+                else if (d_window > D_WINDOW_MAX)
+                    d_window = D_WINDOW_MAX;
                 result = RESULT_ok;
                 break;
 
@@ -432,7 +512,13 @@ void loop() {
 
       // myPID.Compute();
       // analogWrite(3,Output);
-      output = myPID.Run(Input);
+      uint32_t now = millis();
+      dbuf_push(now, Input);
+      float pidOut = myPID.Run(Input);  // P and I only
+      if (myPID.GetMode() == PID::Automatic)
+        output = constrain(pidOut - kD * smoothed_slope(now), 0.0f, 2047.0f);  // D on the smoothed temperature slope
+      else
+        output = pidOut;
       // Serial.println("Current PID Output:");
       // Serial.println(output, 2);
       dutyCycle = output/2048*30.0f;

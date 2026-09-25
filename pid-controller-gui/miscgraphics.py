@@ -138,24 +138,31 @@ class ValueGroupBox(QGroupBox):
     refresh PicButton to explicitly update it and a QLineEdit with an associated QPushButton to set a new value.
     """
 
-    def __init__(self, label: str, float_fmt: str='{:.3f}', conn: remotecontroller.RemoteController=None, parent=None):
+    def __init__(self, label: str, float_fmt: str='{:.3f}', conn: remotecontroller.RemoteController=None, parent=None,
+                 displayName: str=None):
         """
         ValueGroupBox constructor
 
         :param label: name of the GroupBox
         :param conn: RemoteController instance to connect to
         :param parent: [optional] parent class
+        :param displayName: [optional] human-readable name to show instead of the label
         """
 
         super(ValueGroupBox, self).__init__(parent)
 
-        self.setTitle(f"{label.capitalize()} control")
-
         self.label = label
         self.conn = conn
+        self.value = None  # last value read from or written to the controller
+
+        if displayName is None:
+            displayName = label
+            self.setTitle(f"{label.capitalize()} control")
+        else:
+            self.setTitle(f"{displayName} control")
 
         # prepare a template string using another template string :)
-        self.valLabelTemplate = string.Template(f"Current $label: <b>{float_fmt}</b>").safe_substitute(label=label)
+        self.valLabelTemplate = string.Template(f"Current $label: <b>{float_fmt}</b>").safe_substitute(label=displayName)
         self.valLabel = QLabel()
         self.refreshVal()
 
@@ -165,7 +172,7 @@ class ValueGroupBox(QGroupBox):
         refreshButton.clicked.connect(self.refreshVal)
 
         self.writeLine = QLineEdit()
-        self.writeLine.setPlaceholderText(f"Enter new '{label}'")
+        self.writeLine.setPlaceholderText(f"Enter new '{displayName}'")
         self.writeLine.setValidator(QDoubleValidator())  # we can set a Locale() to correctly process floats
         self.writeLine.setToolTip("Float value")
 
@@ -197,9 +204,21 @@ class ValueGroupBox(QGroupBox):
         """
 
         if self.conn is not None:
-            self.valLabel.setText(self.valLabelTemplate.format(self.conn.read(self.label)))
+            self.showVal(self.conn.read(self.label))
         else:
-            self.valLabel.setText(self.valLabelTemplate.format(random.random()))
+            self.showVal(random.random())
+
+
+    def showVal(self, value: float) -> None:
+        """
+        Display the given value without reading it from the RemoteController (e.g. when it has just been written)
+
+        :param value: value to show
+        :return: None
+        """
+
+        self.value = value
+        self.valLabel.setText(self.valLabelTemplate.format(value))
 
 
     def writeButtonClicked(self) -> None:

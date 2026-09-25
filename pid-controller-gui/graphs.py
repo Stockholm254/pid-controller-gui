@@ -17,7 +17,9 @@ CustomGraphicsLayoutWidget
     PyQtGraph fast widget to display live plots
 """
 
+import collections
 import multiprocessing.connection
+import time
 
 import numpy as np
 
@@ -112,6 +114,10 @@ class CustomGraphicsLayoutWidget(pyqtgraph.GraphicsLayoutWidget):
         self.pointsCnt = 0
         self.lastPoint = np.zeros(len(names))
         self.interval = interval
+
+        # (time.monotonic(), process variable) of every point really received from the stream - used to calculate a
+        # smooth derivative of the process variable
+        self.tempSamples = collections.deque(maxlen=3600)
 
         self.names = list(names)  # for usage outside the class
         self.ranges = list(ranges)
@@ -301,6 +307,7 @@ class CustomGraphicsLayoutWidget(pyqtgraph.GraphicsLayoutWidget):
                     point = self.streamPipeRX.recv()
                     self.lastPoint = point
                     self.pointsCnt += 1
+                    self.tempSamples.append((time.monotonic(), float(point[0])))
             except OSError:  # may occur during an exit mess
                 pass
 
@@ -313,7 +320,8 @@ class CustomGraphicsLayoutWidget(pyqtgraph.GraphicsLayoutWidget):
 
         #### insert InfluxDB logging here! ####
         meas_time = datetime.utcnow()
-        if abs(meas_time - self.last_meas_time)>= timedelta(seconds=30):
+        # offline (demo) mode plots random numbers - never log them as real data
+        if not self._isOfflineMode and abs(meas_time - self.last_meas_time)>= timedelta(seconds=30):
             item = {}
             for point, name, averageLabel in zip(self.lastPoint, self.names, self.averageLabels):
                 item[name] = point

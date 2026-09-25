@@ -143,6 +143,8 @@ var_cmd = {
     'err_P_limits': 0b1001,
     'err_I_limits': 0b1010,
 
+    'd_window': 0b1100,  # smoothing window (s) of the controller's derivative term
+
     # commands - send them only in 'read' mode
     'stream_start': 0b0001,
     'stream_stop': 0b0000,
@@ -385,6 +387,7 @@ snapshot_template = {
     'kP': 0.0,
     'kI': 0.0,
     'kD': 0.0,
+    'd_window': 10.0,
     'err_P_limits': [-1.0, 1.0],
     'err_I_limits': [-1.0, 1.0]
 }
@@ -560,7 +563,7 @@ class RemoteController:
                 raise ResponseVarCmdMismatchException(response['opcode'], response['var_cmd'], what, response['values'])
 
             if response['opcode'] == 'read':
-                if response['var_cmd'] in ['setpoint', 'kP', 'kI', 'kD', 'err_I']:
+                if response['var_cmd'] in ['setpoint', 'kP', 'kI', 'kD', 'err_I', 'd_window']:
                     return response['values'][0]
                 elif response['var_cmd'] in ['err_P_limits', 'err_I_limits']:
                     return response['values']
@@ -572,7 +575,7 @@ class RemoteController:
         # offline mode - provide fake (random) data
         else:
 
-            if what in ['setpoint', 'kP', 'kI', 'kD', 'err_I']:
+            if what in ['setpoint', 'kP', 'kI', 'kD', 'err_I', 'd_window']:
                 return random.random()
             elif what in ['err_P_limits', 'err_I_limits']:
                 return random.random(), random.random()
