@@ -3,7 +3,7 @@
   "network": {
     "ip": "127.0.0.1",
     "port": 1200,
-    "checkInterval": 5000
+    "checkInterval": 10000
   },
 
 
@@ -13,7 +13,7 @@
 
 
   "graphs": {
-    "updateInterval": 19,
+    "updateInterval": 100,
     "numberOfPoints": 200
   },
 
@@ -22,19 +22,19 @@
     "processVariable": {
       "name": "Process Variable",
       "limits": {
-        "min": -2.0,
-        "max": 2.0
+        "min": 0.0,
+        "max": 120.0
       },
-      "unit": "Monkeys"
+      "unit": "V"
     },
 
     "controllerOutput": {
       "name": "Controller Output",
       "limits": {
-        "min": -2.0,
-        "max": 2.0
+        "min": 0.0,
+        "max": 4096.0
       },
-      "unit": "Parrots"
+      "unit": "ADC"
     },
 
     "valueFormat": "{:.3f}"

@@ -90,10 +90,14 @@ FLOAT_SIZE = 4
 #
 THREAD_INPUT_HANDLER_SLEEP_TIME = 0.005
 
-CHECK_CONNECTION_TIMEOUT_FIRST_CHECK = 5.0
-CHECK_CONNECTION_TIMEOUT_DEFAULT = 2.0
+# CHECK_CONNECTION_TIMEOUT_FIRST_CHECK = 5.0
+# CHECK_CONNECTION_TIMEOUT_DEFAULT = 2.0
 
-READ_WRITE_TIMEOUT_SYNCHRONOUS = 2.0
+# READ_WRITE_TIMEOUT_SYNCHRONOUS = 2.0
+CHECK_CONNECTION_TIMEOUT_FIRST_CHECK = 30.0
+CHECK_CONNECTION_TIMEOUT_DEFAULT = 20.0
+
+READ_WRITE_TIMEOUT_SYNCHRONOUS = 15.0
 
 
 
@@ -320,9 +324,13 @@ def _thread_input_handler(
 
     stream_accept = True
     stream_msg_cnt = 0
-
-    ser = serial.Serial('COM50', 115200, timeout=0.3)
+    error_cnt = 0
+    # ser = serial.Serial('COM17', 115200, timeout=0.3)
+    print(f'Serial: {ser_conn[0]}')
+    print(f'Baud: {ser_conn[1]}')
+    ser = serial.Serial(ser_conn[0], ser_conn[1], timeout=0.1) # timeout=0.3
     ser.reset_input_buffer()
+    ser.reset_output_buffer()
     while True:
         if input_accept:
 
@@ -341,11 +349,23 @@ def _thread_input_handler(
                         var_cmd_pipe_tx.send(response)
 
             except serial.SerialException:
-                break
+                # break
+                error_cnt += 1
+                if error_cnt < 3:
+                    ser.reset_input_buffer()
+                    ser.reset_output_buffer()
+
+                else:
+                    ser.close()
+                    ser = serial.Serial(ser_conn[0], ser_conn[1], timeout=0.1)
+                    error_cnt = 0
+
+                continue
+
 
             except KeyError as e:
                 print(f"couldn't unpack response {e}")
-                break
+                # break
 
         # check whether there are any service messages (non-blocking mode)
         if var_cmd_pipe_tx.poll():
@@ -460,7 +480,7 @@ class RemoteController:
     and 'offline' (replacing real values by fake random data) mode
     """
 
-    def __init__(self, ip_addr: str, udp_port: int, conn_lost_signal=None):
+    def __init__(self, com_port: str, baudrate: int, conn_lost_signal=None):
         """
         Initialization of the RemoteController class
 
@@ -494,7 +514,9 @@ class RemoteController:
         self.snapshots = []  # currently only one snapshot is created and used
 
         self._is_offline_mode = False
-        self.cont_ip_port = (ip_addr, udp_port)
+        # self.cont_ip_port = (ip_addr, udp_port)
+        self.com_port = com_port
+        self.baudrate = baudrate
 
         #self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         #self.sock.settimeout(0)  # explicitly set the non-blocking mode
@@ -511,7 +533,7 @@ class RemoteController:
             target=_thread_input_handler,
             args=(
                 #self.sock,
-                ('COM50', 115200),
+                (self.com_port, self.baudrate),
                 self.input_thread_control_pipe_thread,
                 self.var_cmd_pipe_tx,
                 self.stream.pipe_tx
@@ -620,18 +642,25 @@ class RemoteController:
 
         if not self._is_offline_mode:
 
-            request = self._make_request('read', what)
+            for i in range(5):
+                try:
+                    request = self._make_request('read', what)
 
-            #self.sock.sendto(request, self.cont_ip_port)
-            self.var_cmd_pipe_rx.send(request)
-            if self.var_cmd_pipe_rx.poll(timeout=READ_WRITE_TIMEOUT_SYNCHRONOUS):
-                response = self.var_cmd_pipe_rx.recv()
-            else:
-                self._is_offline_mode = True
-                if self.conn_lost_signal is not None:
-                    self.conn_lost_signal.emit()
-                return self._parse_response('read', what)
-            return self._parse_response('read', what, response=response)
+                    #self.sock.sendto(request, self.cont_ip_port)
+                    self.var_cmd_pipe_rx.send(request)
+                    if self.var_cmd_pipe_rx.poll(timeout=READ_WRITE_TIMEOUT_SYNCHRONOUS):
+                        response = self.var_cmd_pipe_rx.recv()
+                    else:
+                        self._is_offline_mode = True
+                        if self.conn_lost_signal is not None:
+                            self.conn_lost_signal.emit()
+                        return self._parse_response('read', what)
+
+                    ans = self._parse_response('read', what, response=response)
+                except:
+                    continue
+                else:
+                    return ans
 
         else:
             return self._parse_response('read', what)

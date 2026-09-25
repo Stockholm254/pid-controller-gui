@@ -311,6 +311,7 @@ class CustomGraphicsLayoutWidget(pyqtgraph.GraphicsLayoutWidget):
             graph.curves[0].setData(self.timeAxes, data)
             averageLabel.setValue(point)
 
+
         #### insert InfluxDB logging here! ####
         meas_time = datetime.utcnow()
         if abs(meas_time - self.last_meas_time)>= timedelta(seconds=30):
@@ -319,7 +320,7 @@ class CustomGraphicsLayoutWidget(pyqtgraph.GraphicsLayoutWidget):
                 item[name] = point
                 
             point_dct = { "measurement": "heating",
-                            "tags": {"heater": 'laser'},
+                            "tags": {"heater": 'flange'},
                             "fields": item,
                             "time": meas_time}
             point = Point.from_dict(point_dct, WritePrecision.S)

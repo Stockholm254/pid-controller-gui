@@ -76,7 +76,7 @@ import time
 import multiprocessing
 import select
 import random
-import serial
+
 
 
 #
@@ -90,10 +90,10 @@ FLOAT_SIZE = 4
 #
 THREAD_INPUT_HANDLER_SLEEP_TIME = 0.005
 
-CHECK_CONNECTION_TIMEOUT_FIRST_CHECK = 5.0
-CHECK_CONNECTION_TIMEOUT_DEFAULT = 2.0
+CHECK_CONNECTION_TIMEOUT_FIRST_CHECK = 2.0
+CHECK_CONNECTION_TIMEOUT_DEFAULT = 1.0
 
-READ_WRITE_TIMEOUT_SYNCHRONOUS = 2.0
+READ_WRITE_TIMEOUT_SYNCHRONOUS = 1.0
 
 
 
@@ -148,9 +148,6 @@ var_cmd = {
     'stream_stop': 0b0000,
 
     'save_to_eeprom': 0b1011,
-
-    'lock_start': 0b0010,
-    'lock_stop': 0b0011,
 
     # stream
     'stream': _VAR_CMD_STREAM
@@ -292,8 +289,7 @@ class InputThreadCommand(enum.Enum):
 
 
 def _thread_input_handler(
-    #sock:              socket.socket,
-    ser_conn: tuple,
+    sock:              socket.socket,
     control_pipe:      multiprocessing.Pipe,
     var_cmd_pipe_tx:   multiprocessing.Pipe,
     stream_pipe_tx:    multiprocessing.Pipe
@@ -321,38 +317,24 @@ def _thread_input_handler(
     stream_accept = True
     stream_msg_cnt = 0
 
-    ser = serial.Serial('COM50', 115200, timeout=0.3)
-    ser.reset_input_buffer()
     while True:
         if input_accept:
 
-            try:
-                payload=ser.read(REMOTECONTROLLER_MSG_SIZE)
-                #print("read n bytes: ", len(payload))
-                if len(payload)==REMOTECONTROLLER_MSG_SIZE:
-                    #print('paryload: ', payload)
-                    response = _parse_response(payload)
-                    print('response: ', response)
-                    if response['var_cmd'] == var_cmd['stream']:
-                        if stream_accept:
-                            stream_pipe_tx.send(response['values'])
-                            stream_msg_cnt += 1
-                    else:
-                        var_cmd_pipe_tx.send(response)
+            # poll a socket for available data and return immediately (last argument is a timeout)
+            available = select.select([sock], [], [], 0)
+            if available[0] == [sock]:
+                try:
+                    payload = sock.recv(REMOTECONTROLLER_MSG_SIZE)
+                except ConnectionResetError:  # meet on Windows
+                    sys.exit()
 
-            except serial.SerialException:
-                break
-
-            except KeyError as e:
-                print(f"couldn't unpack response {e}")
-                break
-
-        # check whether there are any service messages (non-blocking mode)
-        if var_cmd_pipe_tx.poll():
-            command = var_cmd_pipe_tx.recv()
-            print("sending command: ", command)
-            ser.write(command)
-
+                response = _parse_response(payload)
+                if response['var_cmd'] == var_cmd['stream']:
+                    if stream_accept:
+                        stream_pipe_tx.send(response['values'])
+                        stream_msg_cnt += 1
+                else:
+                    var_cmd_pipe_tx.send(response)
 
         # check whether there are any service messages (non-blocking mode)
         if control_pipe.poll():
@@ -375,7 +357,7 @@ def _thread_input_handler(
         # sleep all remaining time and repeat
         time.sleep(THREAD_INPUT_HANDLER_SLEEP_TIME)
 
-    ser.close()
+
 
 # use this standardized dictionary to fill snapshots
 snapshot_template = {
@@ -496,22 +478,21 @@ class RemoteController:
         self._is_offline_mode = False
         self.cont_ip_port = (ip_addr, udp_port)
 
-        #self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        #self.sock.settimeout(0)  # explicitly set the non-blocking mode
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.settimeout(0)  # explicitly set the non-blocking mode
 
         self.input_thread_control_pipe_main,\
         self.input_thread_control_pipe_thread = multiprocessing.Pipe(duplex=True)
 
         self.var_cmd_pipe_rx,\
-        self.var_cmd_pipe_tx = multiprocessing.Pipe(duplex=True)
+        self.var_cmd_pipe_tx = multiprocessing.Pipe(duplex=False)
 
         self.stream = Stream(connection=self)
 
         self.input_thread = multiprocessing.Process(
             target=_thread_input_handler,
             args=(
-                #self.sock,
-                ('COM50', 115200),
+                self.sock,
                 self.input_thread_control_pipe_thread,
                 self.var_cmd_pipe_tx,
                 self.stream.pipe_tx
@@ -564,7 +545,7 @@ class RemoteController:
                     return response['values'][0]
                 elif response['var_cmd'] in ['err_P_limits', 'err_I_limits']:
                     return response['values']
-                elif response['var_cmd'] in ['save_to_eeprom', 'stream_start', 'stream_stop', 'lock_start', 'lock_stop']:
+                elif response['var_cmd'] in ['save_to_eeprom', 'stream_start', 'stream_stop']:
                     return result[response['result']]  # 'ok'
             else:
                 return result[response['result']]  # 'ok'
@@ -601,7 +582,7 @@ class RemoteController:
 
         # for reading all keys are allowed so we check only writing
         if operation == 'write':
-            if what in ['stream_start', 'stream_stop', 'save_to_eeprom', 'lock_start', 'lock_stop']:
+            if what in ['stream_start', 'stream_stop', 'save_to_eeprom']:
                 raise RequestKeyException(operation, what)
             elif what == 'err_I' and values[0] != 0.0:
                 raise ValueError("'err_I' allows only reading and reset (writing 0.0), got " + str(values))
@@ -622,8 +603,7 @@ class RemoteController:
 
             request = self._make_request('read', what)
 
-            #self.sock.sendto(request, self.cont_ip_port)
-            self.var_cmd_pipe_rx.send(request)
+            self.sock.sendto(request, self.cont_ip_port)
             if self.var_cmd_pipe_rx.poll(timeout=READ_WRITE_TIMEOUT_SYNCHRONOUS):
                 response = self.var_cmd_pipe_rx.recv()
             else:
@@ -651,8 +631,7 @@ class RemoteController:
 
             request = self._make_request('write', what, *values)
 
-            #self.sock.sendto(request, self.cont_ip_port)
-            self.var_cmd_pipe_rx.send(request)
+            self.sock.sendto(request, self.cont_ip_port)
             if self.var_cmd_pipe_rx.poll(timeout=READ_WRITE_TIMEOUT_SYNCHRONOUS):
                 response = self.var_cmd_pipe_rx.recv()
             else:
@@ -720,24 +699,6 @@ class RemoteController:
 
         return self.read('save_to_eeprom')
 
-    def start_lock(self) -> int:
-        """
-        Start the PID lock
-
-        :return: result['error'] or result['ok'] (int)
-        """
-
-        return self.read('lock_start')
-
-    def stop_lock(self) -> int:
-        """
-        Stop the PID lock
-
-        :return: result['error'] or result['ok'] (int)
-        """
-
-        return self.read('lock_stop')
-
 
     def check_connection(self, timeout=CHECK_CONNECTION_TIMEOUT_DEFAULT) -> int:
         """
@@ -751,15 +712,13 @@ class RemoteController:
         request = _make_request('read', 'setpoint')  # use setpoint as a test request
 
         try:
-            #self.sock.sendto(request, self.cont_ip_port)
-            self.var_cmd_pipe_rx.send(request)
+            self.sock.sendto(request, self.cont_ip_port)
         except OSError:  # probably PC has no network
             self._is_offline_mode = True
             return result['error']
 
         if self.var_cmd_pipe_rx.poll(timeout=timeout):
-            _r = self.var_cmd_pipe_rx.recv()  # receive the message to keep the pipe clean
-            print('got something back: ', _r)
+            self.var_cmd_pipe_rx.recv()  # receive the message to keep the pipe clean
         else:
             self._is_offline_mode = True
             return result['error']
@@ -811,7 +770,7 @@ class RemoteController:
         self.input_thread_control_pipe_main.close()
         self.input_thread_control_pipe_thread.close()
 
-        #self.sock.close()
+        self.sock.close()
 
 
 
@@ -834,4 +793,4 @@ if __name__ == '__main__':
     #     else:
     #         time.sleep(0.005)
 
-    #conn.close()
+    conn.close()

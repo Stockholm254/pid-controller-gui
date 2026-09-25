@@ -104,6 +104,8 @@ class CentralWidget(QWidget):
 
         self.app.mainWindow.errorsSettingsWindow.updateDisplayingValues('err_P_limits', 'err_I_limits')
 
+        
+
 
 
 
@@ -364,7 +366,7 @@ class MainApplication(QApplication):
     connLostSignal = pyqtSignal()  # must be part of the class definition and cannot be dynamically added after
 
 
-    def __init__(self, argv: list):
+    def __init__(self, argv: list, com_port):
         """
         MainApplication constructor
 
@@ -378,6 +380,9 @@ class MainApplication(QApplication):
         d = Path(__file__).resolve().parent.parent
         self.settings = settings.Settings(defaults=util.resource_path(d/'defaultSettings.json'))
         #self.settings = settings.Settings(defaults=util.resource_path('../defaultSettings.json'))
+        self.com = com_port
+        # self.baud = 115200
+        self.baud = 19200
 
         if self.settings['appearance']['theme'] == 'dark':
             # TODO: warns itself as a deprecated method though no suitable alternative has been suggested
@@ -394,9 +399,16 @@ class MainApplication(QApplication):
 
         self.isOfflineMode = False
 
+        # self.conn = remotecontroller.RemoteController(
+        #     self.settings['network']['ip'],
+        #     self.settings['network']['port'],
+        #     conn_lost_signal=self.connLostSignal
+        # )
+
+        # Adjusted for COM 
         self.conn = remotecontroller.RemoteController(
-            self.settings['network']['ip'],
-            self.settings['network']['port'],
+            self.com,
+            self.baud,
             conn_lost_signal=self.connLostSignal
         )
 
@@ -446,17 +458,17 @@ class MainApplication(QApplication):
         """
 
         print("Check connection")
-
-        if self.conn.check_connection() == remotecontroller.result['error']:
-            self.connLostHandler()
-        else:
-            # prevent of multiple calls of these instructions by using this flag
-            if self.isOfflineMode:
-                self.isOfflineMode = False
-                print('Reconnected')
-                self.mainWindow.centralWidget.updateDisplayingValues()
-                self.mainWindow.statusBar().removeWidget(self.connLostStatusBarLabel)
-                self.mainWindow.statusBar().showMessage('Reconnected')
+        print("jk, we're not doing that anymore!")
+        # if self.conn.check_connection() == remotecontroller.result['error']:
+        #     self.connLostHandler()
+        # else:
+        #     # prevent of multiple calls of these instructions by using this flag
+        #     if self.isOfflineMode:
+        #         self.isOfflineMode = False
+        #         print('Reconnected')
+        #         self.mainWindow.centralWidget.updateDisplayingValues()
+        #         self.mainWindow.statusBar().removeWidget(self.connLostStatusBarLabel)
+        #         self.mainWindow.statusBar().showMessage('Reconnected')
 
 
     @pyqtSlot()
@@ -492,16 +504,11 @@ class MainApplication(QApplication):
 
 
 
-if __name__ == '__main__':
-    """
-    Main entry point
-    """
-
+def run_app(com_port):
     multiprocessing.freeze_support()  # Windows support
 
     QCoreApplication.setOrganizationName("Andrey Chufyrev")
     QCoreApplication.setApplicationName("PID controller GUI")
 
-    application = MainApplication(sys.argv)
-
+    application = MainApplication(sys.argv, com_port)
     sys.exit(application.exec_())
