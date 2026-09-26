@@ -130,6 +130,7 @@ opcode = {
 opcode_swapped = {value: key for key, value in opcode.items()}
 
 _VAR_CMD_STREAM = 65535
+_VAR_CMD_STREAM_DERIVATIVE = 65534
 var_cmd = {
     # variables
     'setpoint': 0b0100,
@@ -144,6 +145,7 @@ var_cmd = {
     'err_I_limits': 0b1010,
 
     'd_window': 0b1100,  # smoothing window (s) of the controller's derivative term
+    'mode': 0b1101,  # see 'mode' dict below
 
     # commands - send them only in 'read' mode
     'stream_start': 0b0001,
@@ -155,7 +157,8 @@ var_cmd = {
     'lock_stop': 0b0011,
 
     # stream
-    'stream': _VAR_CMD_STREAM
+    'stream': _VAR_CMD_STREAM,
+    'stream_derivative': _VAR_CMD_STREAM_DERIVATIVE
 }
 var_cmd_swapped = {value: key for key, value in var_cmd.items()}
 
@@ -168,6 +171,14 @@ result = {
 result_swapped = {value: key for key, value in result.items()}
 
 stream_prefix = 0b00000001  # every stream message should be prefaced with such byte
+# (dV/dt, unused) message the controller sends right before every stream message
+stream_prefix_derivative = 0b00000010
+
+# values of the 'mode' variable
+mode = {
+    'pid': 0,  # PID lock on the setpoint, D on the smoothed dV/dt
+    'damp': 1  # derivative damp: only kD * dV/dt around the output at the time of engaging (setpoint, kP, kI unused)
+}
 
 
 
@@ -208,7 +219,8 @@ def _parse_response(response_buf: bytearray) -> dict:
     if response_byte.stream:
         response_dict = {
             'opcode': opcode['read'],
-            'var_cmd': var_cmd['stream'],
+            'var_cmd': var_cmd['stream_derivative'] if response_byte.stream == stream_prefix_derivative
+                       else var_cmd['stream'],
             'result': result['ok']
         }
     else:
@@ -322,6 +334,7 @@ def _thread_input_handler(
 
     stream_accept = True
     stream_msg_cnt = 0
+    derivative = 0.0  # latest dV/dt, attached to the following stream point
 
     ser = serial.Serial('COM50', 115200, timeout=0.3)
     ser.reset_input_buffer()
@@ -335,9 +348,12 @@ def _thread_input_handler(
                     #print('paryload: ', payload)
                     response = _parse_response(payload)
                     print('response: ', response)
-                    if response['var_cmd'] == var_cmd['stream']:
+                    if response['var_cmd'] == var_cmd['stream_derivative']:
+                        derivative = response['values'][0]
+                    elif response['var_cmd'] == var_cmd['stream']:
                         if stream_accept:
-                            stream_pipe_tx.send(response['values'])
+                            # point is (process variable, dV/dt, controller output)
+                            stream_pipe_tx.send([response['values'][0], derivative, response['values'][1]])
                             stream_msg_cnt += 1
                     else:
                         var_cmd_pipe_tx.send(response)
@@ -563,7 +579,7 @@ class RemoteController:
                 raise ResponseVarCmdMismatchException(response['opcode'], response['var_cmd'], what, response['values'])
 
             if response['opcode'] == 'read':
-                if response['var_cmd'] in ['setpoint', 'kP', 'kI', 'kD', 'err_I', 'd_window']:
+                if response['var_cmd'] in ['setpoint', 'kP', 'kI', 'kD', 'err_I', 'd_window', 'mode']:
                     return response['values'][0]
                 elif response['var_cmd'] in ['err_P_limits', 'err_I_limits']:
                     return response['values']
@@ -575,7 +591,7 @@ class RemoteController:
         # offline mode - provide fake (random) data
         else:
 
-            if what in ['setpoint', 'kP', 'kI', 'kD', 'err_I', 'd_window']:
+            if what in ['setpoint', 'kP', 'kI', 'kD', 'err_I', 'd_window', 'mode']:
                 return random.random()
             elif what in ['err_P_limits', 'err_I_limits']:
                 return random.random(), random.random()

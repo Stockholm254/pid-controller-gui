@@ -17,9 +17,7 @@ CustomGraphicsLayoutWidget
     PyQtGraph fast widget to display live plots
 """
 
-import collections
 import multiprocessing.connection
-import time
 
 import numpy as np
 
@@ -92,7 +90,7 @@ class CustomGraphicsLayoutWidget(pyqtgraph.GraphicsLayoutWidget):
         :param names: tuple of strings with graphs' names
         :param numPoints: number of points in each graph
         :param interval: time in ms to force the plot refresh
-        :param ranges: tuple of tuples with (min,max) values of each plot respectively
+        :param ranges: tuple of tuples with (min,max) values of each plot respectively (None to auto-range a plot)
         :param units: tuple of strings representing measurement unit of each plot
         :param controlPipe: multiprocessing.Connection instance to communicate with a stream source
         :param streamPipeRX: multiprocessing.Connection instance from where new points should arrive
@@ -114,10 +112,6 @@ class CustomGraphicsLayoutWidget(pyqtgraph.GraphicsLayoutWidget):
         self.pointsCnt = 0
         self.lastPoint = np.zeros(len(names))
         self.interval = interval
-
-        # (time.monotonic(), process variable) of every point really received from the stream - used to calculate a
-        # smooth derivative of the process variable
-        self.tempSamples = collections.deque(maxlen=3600)
 
         self.names = list(names)  # for usage outside the class
         self.ranges = list(ranges)
@@ -148,7 +142,10 @@ class CustomGraphicsLayoutWidget(pyqtgraph.GraphicsLayoutWidget):
                 graph = self.addPlot(y=np.zeros(numPoints), labels={'right': name, 'bottom': "Time, ms"}, pen='r')
             else:
                 graph = self.addPlot(y=np.zeros(numPoints), labels={'right': name}, pen='r')
-            graph.setRange(yRange=range)
+            if range is None:
+                graph.enableAutoRange(axis='y')
+            else:
+                graph.setRange(yRange=range)
             graph.hideButtons()
             graph.hideAxis('left')
             graph.showGrid(x=True, y=True, alpha=0.2)
@@ -184,6 +181,23 @@ class CustomGraphicsLayoutWidget(pyqtgraph.GraphicsLayoutWidget):
     def isRun(self) -> bool:
         """bool property getter"""
         return self._isRun
+
+
+    def setGraphVisible(self, index: int, visible: bool) -> None:
+        """
+        Show or hide a plot. A hidden plot keeps receiving points so its history is there when it is shown again
+
+        :param index: position of the plot in the 'names' tuple
+        :param visible: whether to show the plot
+        :return: None
+        """
+
+        graph = self.graphs[index]
+        isVisible = graph in self.ci.items
+        if visible and not isVisible:
+            self.ci.addItem(graph, row=index, col=0)
+        elif not visible and isVisible:
+            self.ci.removeItem(graph)
 
 
     def _addWarningSign(self) -> None:
@@ -307,7 +321,6 @@ class CustomGraphicsLayoutWidget(pyqtgraph.GraphicsLayoutWidget):
                     point = self.streamPipeRX.recv()
                     self.lastPoint = point
                     self.pointsCnt += 1
-                    self.tempSamples.append((time.monotonic(), float(point[0])))
             except OSError:  # may occur during an exit mess
                 pass
 

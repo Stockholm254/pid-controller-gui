@@ -14,10 +14,9 @@ CentralWidget
 
 import multiprocessing
 import sys
-import time
 
 from PyQt5.QtCore import Qt, QCoreApplication, QTimer, pyqtSlot, pyqtSignal
-from PyQt5.QtWidgets import QApplication, QWidget, QMainWindow, QGridLayout, QHBoxLayout, QLabel, QAction
+from PyQt5.QtWidgets import QApplication, QWidget, QMainWindow, QGridLayout, QHBoxLayout, QLabel, QAction, QComboBox
 from PyQt5.QtGui import QIcon
 
 import qdarkstyle
@@ -34,9 +33,19 @@ from pathlib import Path
 
 
 
-DERIVATIVE_LABEL_UPDATE_INTERVAL_MS = 1000  # refresh period of the dT/dt label (no controller traffic involved)
-DERIVATIVE_WINDOW_LIMITS_S = (2.0, 120.0)  # same clamping as the controller applies to 'd_window'
-TEMPERATURE_MAX_AGE_S = 5.0  # newest streamed temperature older than this is not considered current
+DERIVATIVE_GRAPH_NAME = "dV/dt"  # smoothed derivative of the process variable the controller's D term acts on
+DERIVATIVE_GRAPH_INDEX = 1  # position in the stream point (process variable, dV/dt, controller output)
+
+# names shown by the mode switch, keys match remotecontroller.mode
+MODE_NAMES = {
+    'pid': "PID",
+    'damp': "Derivative damp"
+}
+# ValueGroupBox'es the controller uses in each mode, all others are grayed out
+MODE_CONTROLS = {
+    'pid': ('setpoint', 'kP', 'kI', 'kD', 'd_window'),
+    'damp': ('kD', 'd_window')
+}
 
 
 
@@ -70,8 +79,6 @@ class CentralWidget(QWidget):
             miscgraphics.ValueGroupBox('d_window', float_fmt=app.settings['pid']['valueFormat'], conn=app.conn,
                                        displayName="D window (s)")
         ]
-        self.setpointBox = self.contValGroupBoxes[0]
-        self.dWindowBox = self.contValGroupBoxes[4]
 
         for groupBox, yPosition in zip(self.contValGroupBoxes, [0,3,6,9,12]):
             grid.addWidget(groupBox, yPosition, 0, 3, 2)
@@ -79,99 +86,44 @@ class CentralWidget(QWidget):
 
         self.graphs = graphs.CustomGraphicsLayoutWidget(
             names=(app.settings['pid']['processVariable']['name'],
+                   DERIVATIVE_GRAPH_NAME,
                    app.settings['pid']['controllerOutput']['name']),
             numPoints=app.settings['graphs']['numberOfPoints'],
             interval=app.settings['graphs']['updateInterval'],
             ranges=((app.settings['pid']['processVariable']['limits']['min'],
                      app.settings['pid']['processVariable']['limits']['max']),
+                    None,  # auto-range
                     (app.settings['pid']['controllerOutput']['limits']['min'],
                      app.settings['pid']['controllerOutput']['limits']['max'])),
             units=(app.settings['pid']['processVariable']['unit'],
+                   app.settings['pid']['processVariable']['unit'] + "/s",
                    app.settings['pid']['controllerOutput']['unit']),
             controlPipe=None if app.isOfflineMode else app.conn.input_thread_control_pipe_main,
             streamPipeRX=None if app.isOfflineMode else app.conn.stream.pipe_rx,
             theme=app.settings['appearance']['theme'],
         )
 
-        for averageLabel, name, yPosition in zip(self.graphs.averageLabels, self.graphs.names, [15,16]):
+        for averageLabel, name, yPosition in zip(self.graphs.averageLabels, self.graphs.names, [15,16,17]):
             hBox = QHBoxLayout()
             hBox.addWidget(QLabel(name))
             hBox.addWidget(averageLabel, alignment=Qt.AlignLeft)
             grid.addLayout(hBox, yPosition, 0, 1, 2)
 
-        # smooth derivative of the temperature over the same window the controller uses for its D term
-        self.derivativeLabel = QLabel()
-        hBox = QHBoxLayout()
-        hBox.addWidget(QLabel("dT/dt"))
-        hBox.addWidget(self.derivativeLabel, alignment=Qt.AlignLeft)
-        grid.addLayout(hBox, 17, 0, 1, 2)
-
         grid.addWidget(self.graphs, 0, 2, 18, 6)
 
-        self.derivativeTimer = QTimer()
-        self.derivativeTimer.timeout.connect(self.updateDerivativeLabel)
-        self.derivativeTimer.start(DERIVATIVE_LABEL_UPDATE_INTERVAL_MS)
-        self.updateDerivativeLabel()
 
-
-    def derivativeWindow(self) -> float:
+    def setMode(self, mode: str) -> None:
         """
-        Window (in seconds) of the controller's smoothed derivative, as last read from or written to the controller
+        Adapt the UI to the controller mode: gray out the values the mode doesn't use and show the dV/dt graph in the
+        derivative damp mode only
 
-        :return: window length in seconds
-        """
-
-        window = self.dWindowBox.value
-        if window is None:
-            window = remotecontroller.snapshot_template['d_window']
-        return min(max(window, DERIVATIVE_WINDOW_LIMITS_S[0]), DERIVATIVE_WINDOW_LIMITS_S[1])
-
-
-    def _fitRecentTemperatures(self):
-        """
-        Straight-line fit of the streamed temperatures from the last derivative window
-
-        :return: util.fit_line() result or None if there is no current data to fit
-        """
-
-        samples = self.graphs.tempSamples
-        now = time.monotonic()
-        if not samples or now - samples[-1][0] > TEMPERATURE_MAX_AGE_S:
-            return None
-
-        window = self.derivativeWindow()
-        return util.fit_line((t, value) for t, value in samples if now - t <= window)
-
-
-    def smoothedTemperature(self) -> float:
-        """
-        Current temperature smoothed over the derivative window
-
-        :return: temperature or None if no current data is streamed
-        """
-
-        fit = self._fitRecentTemperatures()
-        if fit is not None:
-            return fit[1]
-
-        samples = self.graphs.tempSamples
-        if samples and time.monotonic() - samples[-1][0] <= TEMPERATURE_MAX_AGE_S:
-            return samples[-1][1]  # too few points in the window to fit a line - use the newest one
-        return None
-
-
-    def updateDerivativeLabel(self) -> None:
-        """
-        Show the smooth derivative of the temperature (callback for derivativeTimer.timeout slot)
-
+        :param mode: key of remotecontroller.mode
         :return: None
         """
 
-        fit = self._fitRecentTemperatures()
-        if fit is None:
-            self.derivativeLabel.setText("—")
-        else:
-            self.derivativeLabel.setText(f"{fit[0] * 60:+.3f} °C/min ({self.derivativeWindow():g} s fit)")
+        for groupBox in self.contValGroupBoxes:
+            groupBox.setEnabled(groupBox.label in MODE_CONTROLS[mode])
+        self.graphs.setGraphVisible(DERIVATIVE_GRAPH_INDEX, mode == 'damp')
 
 
     def updateDisplayingValues(self) -> None:
@@ -186,6 +138,7 @@ class CentralWidget(QWidget):
             groupBox.refreshVal()
 
         self.app.mainWindow.errorsSettingsWindow.updateDisplayingValues('err_P_limits', 'err_I_limits')
+        self.app.mainWindow.refreshMode()
 
 
 
@@ -271,10 +224,10 @@ class MainWindow(QMainWindow):
         lockAction.setStatusTip("[L] Lock/Unlock PID")
         lockAction.triggered.connect(self.lockPID)
 
-        dampAction = QAction(QIcon(util.resource_path('../img/play_pause.png')), 'Derivative damp', self)
-        dampAction.setShortcut('D')
-        dampAction.setStatusTip("[D] Lock at the current temperature and damp its changes (dT/dt -> 0)")
-        dampAction.triggered.connect(self.dampPID)
+        self.modeComboBox = QComboBox()
+        self.modeComboBox.addItems(MODE_NAMES.values())
+        self.modeComboBox.setStatusTip("Controller mode. PID: lock on the setpoint. Derivative damp: only kD * dV/dt "
+                                       "around the output at the time of switching/locking (setpoint, kP, kI unused)")
 
         playpauseAction = QAction(QIcon(util.resource_path('../img/play_pause.png')), 'Play/Pause', self)
         playpauseAction.setShortcut('P')
@@ -284,7 +237,8 @@ class MainWindow(QMainWindow):
         graphsToolbar = self.addToolBar('graphs')  # internal name
         graphsToolbar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         graphsToolbar.addAction(lockAction)
-        graphsToolbar.addAction(dampAction)
+        graphsToolbar.addWidget(QLabel(" Mode: "))
+        graphsToolbar.addWidget(self.modeComboBox)
         graphsToolbar.addAction(playpauseAction)
         self.playpauseButton = graphsToolbar.widgetForAction(playpauseAction)
         self.playpauseButton.setCheckable(True)
@@ -294,10 +248,6 @@ class MainWindow(QMainWindow):
         self.lockButton = graphsToolbar.widgetForAction(lockAction)
         self.lockButton.setCheckable(True)
         self.lockButton.setChecked(False)
-
-        self.dampButton = graphsToolbar.widgetForAction(dampAction)
-        self.dampButton.setCheckable(True)
-        self.dampButton.setChecked(False)
 
         mainMenu = self.menuBar().addMenu('&Menu')
         mainMenu.addAction(aboutAction)
@@ -310,6 +260,10 @@ class MainWindow(QMainWindow):
 
         self.centralWidget = CentralWidget(app=app)
         self.setCentralWidget(self.centralWidget)
+
+        # the mode switch adapts the CentralWidget so it can be used only now
+        self.refreshMode()
+        self.modeComboBox.currentIndexChanged.connect(self.modeChanged)
 
         self.statusBar().show()  # can be not visible in online mode otherwise
 
@@ -339,55 +293,64 @@ class MainWindow(QMainWindow):
             print("stop lock")
             if self.app.conn.stop_lock() == remotecontroller.result['ok']:
                 self.lockButton.setChecked(False)
-                self.dampButton.setChecked(False)
         else:
             print("start lock")
             if self.app.conn.start_lock() == remotecontroller.result['ok']:
                 self.lockButton.setChecked(True)
 
-    def dampPID(self) -> None:
+
+    def _showMode(self, mode: str) -> None:
         """
-        Toggles the derivative damping. Turning it on locks the PID at the current (smoothed) temperature: the
-        controller's smoothed D term then damps temperature changes and, with kI > 0, the integral cancels the remaining
-        drift (dT/dt -> 0). With kP = kI = 0 it is a pure D damper. Turning it off unlocks the PID
+        Set the mode switch (without sending anything to the controller) and adapt the rest of the UI
+
+        :param mode: key of remotecontroller.mode
+        :return: None
+        """
+
+        self.mode = mode
+        self.modeComboBox.blockSignals(True)
+        self.modeComboBox.setCurrentIndex(list(MODE_NAMES).index(mode))
+        self.modeComboBox.blockSignals(False)
+        self.centralWidget.setMode(mode)
+
+
+    def refreshMode(self) -> None:
+        """
+        Read the mode from the controller and show it (PID in the offline mode)
 
         :return: None
         """
 
-        if self.dampButton.isChecked():
-            print("stop derivative damp")
-            if self.app.conn.stop_lock() == remotecontroller.result['ok']:
-                self.dampButton.setChecked(False)
-                self.lockButton.setChecked(False)
-            return
+        mode = 'pid'
+        if not self.app.isOfflineMode and self.app.conn.read('mode') == remotecontroller.mode['damp']:
+            mode = 'damp'
+        self._showMode(mode)
 
-        if self.app.isOfflineMode:
-            miscgraphics.MessageWindow("Derivative damp needs a connection to the controller", status='Warning')
-            return
 
-        temperature = self.centralWidget.smoothedTemperature()
-        if temperature is None:
-            miscgraphics.MessageWindow("No live temperature. Start the graphs [P] and try again", status='Warning')
-            return
+    def modeChanged(self, index: int) -> None:
+        """
+        Send the mode picked by the mode switch to the controller (callback for modeComboBox.currentIndexChanged slot).
+        If the controller is locked it switches over without a jump of the output
 
-        print(f"start derivative damp at {temperature}")
+        :param index: index of the picked item
+        :return: None
+        """
+
+        mode = list(MODE_NAMES)[index]
+        print(f"mode: {mode}")
         # an exception escaping a Qt slot would abort the whole app
         try:
-            if self.app.conn.write('setpoint', temperature) != remotecontroller.result['ok']:
-                return  # connection is lost, the user has already been notified
-            self.centralWidget.setpointBox.showVal(temperature)
-
-            if not self.lockButton.isChecked():
-                if self.app.conn.start_lock() != remotecontroller.result['ok']:
-                    return
-                self.lockButton.setChecked(True)
+            ok = self.app.conn.write('mode', remotecontroller.mode[mode]) == remotecontroller.result['ok']
         except (remotecontroller.ResponseException, remotecontroller.ResponseVarCmdMismatchException,
                 remotecontroller.ResponseOperationMismatchException) as e:
-            miscgraphics.MessageWindow(f"Derivative damp failed: {e}", status='Error')
-            return
+            miscgraphics.MessageWindow(f"Mode switch failed: {e}", status='Error')
+            ok = False
 
-        self.dampButton.setChecked(True)
-        self.statusBar().showMessage(f"Derivative damp: holding dT/dt at 0 around {temperature:.3f}")
+        if ok:
+            self._showMode(mode)
+            self.statusBar().showMessage(f"Mode: {MODE_NAMES[mode]}")
+        else:
+            self._showMode(self.mode)  # revert the switch
 
 
     def restoreContValues(self) -> None:
@@ -397,8 +360,7 @@ class MainWindow(QMainWindow):
         :return: None
         """
 
-        self.dampButton.setChecked(False)  # the setpoint captured by the derivative damp is overwritten
-        date = self.app.conn.restore_values(self.app.conn.snapshots[0])  # currently save and use only one snapshot
+        date =self.app.conn.restore_values(self.app.conn.snapshots[0])  # currently save and use only one snapshot
         print(f"Snapshot from {date} is restored")
         self.centralWidget.updateDisplayingValues()
 

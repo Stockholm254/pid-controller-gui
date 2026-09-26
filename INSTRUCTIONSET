@@ -27,11 +27,17 @@ Request: 1 byte, MSB to LSB
         1001 - EpL
         1010 - EiL
 
+        1100 - D window (s)
+        1101 - mode (0 - PID, 1 - derivative damp: only Kd * dV/dt, setpoint/Kp/Ki unused)
+
 
         specials (opcode is always 0)
 
         0000 - stream stop
         0001 - stream start
+
+        0010 - lock start
+        0011 - lock stop
 
         1011 - save to EEPROM
 
@@ -55,7 +61,8 @@ Response: 1 byte, MSB to LSB
 
 
     stream prefix
-        01 (so entire response byte is 0x01, then float values follows)
+        01 (so entire response byte is 0x01, then float values follows: process variable, controller output)
+        10 (0x02, sent right before every 0x01 message: dV/dt, unused)
 
 
 
