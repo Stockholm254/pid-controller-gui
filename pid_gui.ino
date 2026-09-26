@@ -63,16 +63,18 @@ static float d_window = 10.0f;
 #define D_WINDOW_MIN 2.0f
 #define D_WINDOW_MAX 120.0f
 
-// controller mode (VAR_mode, sent as a float): MODE_pid holds the setpoint, MODE_damp only opposes dV/dt around the
-// output it had when engaged (kP and kI are ignored)
+// controller mode (VAR_mode, sent as a float): MODE_pid holds the setpoint, MODE_damp only acts on dV/dt, starting
+// from the output it had when engaged: kD * dV/dt plus kI * integral of dV/dt, which removes a steady drift (setpoint and
+// kP are ignored)
 enum {
     MODE_pid = 0,
     MODE_damp = 1
 };
 static int mode = MODE_pid;
 static bool locked = false;
-static float damp_bias = 0.0f;  // output held by MODE_damp
+static float damp_bias = 0.0f;  // MODE_damp output without the D term, moved by the integral of dV/dt
 static float slope = 0.0f;  // latest smoothed dV/dt [V/s]
+static uint32_t last_loop_ms = 0;
 
 #define REQUEST_RESPONSE_BUF_SIZE (sizeof(char)+2*(sizeof(float)))  // same size for both requests and responses
 unsigned char buf[REQUEST_RESPONSE_BUF_SIZE];  // message buffer (both for receiving and sending)
@@ -426,11 +428,18 @@ void loop() {
     uint32_t now = millis();
     dbuf_sample(now, vcurrent);
     slope = smoothed_slope(now);
+    float dt = (now - last_loop_ms) / 1000.0f;
+    last_loop_ms = now;
     if (locked) {
-      if (mode == MODE_pid)
+      if (mode == MODE_pid) {
         output = myPID.Run(vcurrent) - kD * slope;  // P and I from the library, D on the smoothed slope
-      else
-        output = damp_bias - kD * slope;  // derivative damp: oppose dV/dt only
+      }
+      else {
+        // derivative damp: the integral of dV/dt accumulates into the held output (clamped - no windup) so a change of
+        // kI doesn't make a jump, then D opposes dV/dt
+        damp_bias = constrain(damp_bias - kI * slope * dt, -2047.0f, 2047.0f);
+        output = damp_bias - kD * slope;
+      }
       output = constrain(output, -2047.0f, 2047.0f);
     }
     // unlocked: hold the last output

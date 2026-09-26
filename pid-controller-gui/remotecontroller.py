@@ -177,7 +177,8 @@ stream_prefix_derivative = 0b00000010
 # values of the 'mode' variable
 mode = {
     'pid': 0,  # PID lock on the setpoint, D on the smoothed dV/dt
-    'damp': 1  # derivative damp: only kD * dV/dt around the output at the time of engaging (setpoint, kP, kI unused)
+    'damp': 1  # derivative damp: kD * dV/dt + kI * integral of dV/dt from the output at the time of engaging
+               # (setpoint, kP unused)
 }
 
 

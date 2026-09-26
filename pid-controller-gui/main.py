@@ -44,7 +44,7 @@ MODE_NAMES = {
 # ValueGroupBox'es the controller uses in each mode, all others are grayed out
 MODE_CONTROLS = {
     'pid': ('setpoint', 'kP', 'kI', 'kD', 'd_window'),
-    'damp': ('kD', 'd_window')
+    'damp': ('kI', 'kD', 'd_window')
 }
 
 
@@ -226,8 +226,9 @@ class MainWindow(QMainWindow):
 
         self.modeComboBox = QComboBox()
         self.modeComboBox.addItems(MODE_NAMES.values())
-        self.modeComboBox.setStatusTip("Controller mode. PID: lock on the setpoint. Derivative damp: only kD * dV/dt "
-                                       "around the output at the time of switching/locking (setpoint, kP, kI unused)")
+        self.modeComboBox.setStatusTip("Controller mode. PID: lock on the setpoint. Derivative damp: from the output at "
+                                       "the time of switching/locking, kD * dV/dt + kI * integral of dV/dt "
+                                       "(setpoint, kP unused)")
 
         playpauseAction = QAction(QIcon(util.resource_path('../img/play_pause.png')), 'Play/Pause', self)
         playpauseAction.setShortcut('P')

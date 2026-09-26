@@ -28,7 +28,7 @@ Request: 1 byte, MSB to LSB
         1010 - EiL
 
         1100 - D window (s)
-        1101 - mode (0 - PID, 1 - derivative damp: only Kd * dV/dt, setpoint/Kp/Ki unused)
+        1101 - mode (0 - PID, 1 - derivative damp: Kd * dV/dt + Ki * integral of dV/dt, setpoint/Kp unused)
 
 
         specials (opcode is always 0)
